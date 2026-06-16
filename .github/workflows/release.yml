@@ -6,7 +6,7 @@ on:
       - "v*"
 
 jobs:
-  build:
+  build-sign:
     runs-on: macos-latest
     permissions:
       contents: write
@@ -29,18 +29,60 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Build, sign, and notarize universal macOS app
+      # Important: do NOT pass APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID here.
+      # Otherwise Tauri will try to notarize during build.
+      - name: Build and sign universal macOS app
         run: pnpm tauri build --target universal-apple-darwin
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+
+      - name: Upload signed app
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-macos-artifacts
+          path: src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
+
+  notarize-release:
+    needs: build-sign
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download signed app
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-macos-artifacts
+          path: artifacts
+
+      - name: Zip app for notarization
+        run: |
+          APP="$(find artifacts -name '*.app' -type d | head -n 1)"
+          echo "APP=$APP" >> "$GITHUB_ENV"
+          ditto -c -k --keepParent "$APP" app-notarize.zip
+
+      - name: Notarize app zip
+        run: |
+          xcrun notarytool submit app-notarize.zip \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_PASSWORD" \
+            --wait
+
+          xcrun stapler staple "$APP"
+          xcrun stapler validate "$APP"
+        env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
-      - uses: softprops/action-gh-release@v2
+      - name: Create final app zip
+        run: |
+          ditto -c -k --keepParent "$APP" "VPlayer-macOS.app.zip"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          files: |
-            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
-            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+          files: VPlayer-macOS.app.zip
