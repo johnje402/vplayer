@@ -1,0 +1,89 @@
+name: mac-appstore
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Import Apple certificates
+        env:
+          APP_CERT: ${{ secrets.APPSTORE_CERTIFICATE_BASE64 }}
+          APP_CERT_PASS: ${{ secrets.APPSTORE_CERTIFICATE_PASSWORD }}
+          INSTALLER_CERT: ${{ secrets.APPSTORE_INSTALLER_CERTIFICATE_BASE64 }}
+          INSTALLER_CERT_PASS: ${{ secrets.APPSTORE_INSTALLER_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN=$RUNNER_TEMP/app-signing.keychain-db
+          security create-keychain -p "" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "" "$KEYCHAIN"
+
+          echo "$APP_CERT" | base64 --decode > app.p12
+          echo "$INSTALLER_CERT" | base64 --decode > installer.p12
+
+          security import app.p12 -k "$KEYCHAIN" -P "$APP_CERT_PASS" -T /usr/bin/codesign
+          security import installer.p12 -k "$KEYCHAIN" -P "$INSTALLER_CERT_PASS" -T /usr/bin/productbuild
+
+          security list-keychains -d user -s "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KEYCHAIN"
+
+      - name: Add provisioning profile and API key
+        run: |
+          echo "${{ secrets.APPSTORE_PROVISION_PROFILE_BASE64 }}" | base64 --decode > src-tauri/embedded.provisionprofile
+          mkdir -p ~/.private_keys
+          echo "${{ secrets.APPSTORE_API_KEY_BASE64 }}" | base64 --decode > ~/.private_keys/AuthKey_${{ secrets.APPSTORE_API_KEY_ID }}.p8
+
+      - name: Build Tauri universal app
+        env:
+          APPSTORE_SIGNING_IDENTITY: "Apple Distribution"
+          APPSTORE_TEAM_ID: ${{ secrets.APPSTORE_TEAM_ID }}
+        run: |
+          pnpm tauri build \
+            --target universal-apple-darwin \
+            --config src-tauri/tauri.appstore.conf.json
+
+      - name: Build signed pkg
+        run: |
+          APP_NAME="vplayer"
+          APP_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/$APP_NAME.app"
+
+          xcrun productbuild \
+            --sign "3rd Party Mac Developer Installer" \
+            --component "$APP_PATH" /Applications \
+            "$APP_NAME.pkg"
+
+      - name: Upload to App Store Connect
+        run: |
+          xcrun altool --upload-app \
+            --type macos \
+            --file "vplayer.pkg" \
+            --apiKey "${{ secrets.APPSTORE_API_KEY_ID }}" \
+            --apiIssuer "${{ secrets.APPSTORE_API_ISSUER }}"
