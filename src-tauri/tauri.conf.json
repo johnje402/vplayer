@@ -14,7 +14,8 @@
       {
         "title": "vplayer",
         "width": 800,
-        "height": 600
+        "height": 600,
+        "maximized": true
       }
     ],
     "security": {
@@ -22,7 +23,7 @@
         "enable": true,
         "scope": ["**"]
       },
-      "csp": "default-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost; media-src 'self' asset: http://asset.localhost"
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost; media-src 'self' memvideo: blob: data:; connect-src ipc: http://ipc.localhost"
     }
   },
   "bundle": {
@@ -35,5 +36,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "cli": {
+      "args": [
+        {
+          "name": "password",
+          "short": "p",
+          "takesValue": true
+        }
+      ]
+    }
   }
 }

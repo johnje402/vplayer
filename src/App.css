@@ -39,6 +39,26 @@ button {
     linear-gradient(135deg, #090b10, #050508);
 }
 
+.app.fullscreen .sidebar,
+.app.fullscreen .topbar {
+  display: none;
+}
+
+.app.fullscreen .main {
+  width: 100vw;
+  height: 100vh;
+}
+
+.app.fullscreen .player-card {
+  width: 100vw;
+  height: 100vh;
+  border-radius: 0;
+}
+
+.app.fullscreen .video-box {
+  height: calc(100vh - 100px);
+}
+
 .sidebar {
   height: 100vh;
   min-height: 0;

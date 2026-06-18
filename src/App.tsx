@@ -1,7 +1,8 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 function fmt(t: number) {
   if (!Number.isFinite(t)) return "00:00";
@@ -12,24 +13,25 @@ function fmt(t: number) {
 
 export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const playerRef = useRef<HTMLDivElement>(null);
 
-  const [src, setSrc] = useState("");
   const [name, setName] = useState("No video selected");
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(1);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   async function openVideo() {
     const file = await open({
       multiple: false,
       directory: false,
-      filters: [{ name: "Video", extensions: ["mp4", "webm", "mov"] }],
     });
 
     if (typeof file !== "string") return;
 
     const video = videoRef.current;
+    if (!video) return;
     if (video) {
       video.pause();
       video.currentTime = 0;
@@ -39,12 +41,19 @@ export default function App() {
     setTime(0);
     setDuration(0);
     setName(file.split(/[\\/]/).pop() || file);
-    setSrc(convertFileSrc(file));
+
+    const videoUrl = await invoke<string>("load_video_to_memory", {
+      id: "my-video",
+      path: file,
+    });
+    video.src = videoUrl;
+    video.controls = true;
+    video.play();
   }
 
   async function togglePlay() {
     const video = videoRef.current;
-    if (!video || !src) return;
+    if (!video || !video.src) return;
 
     try {
       if (video.paused) {
@@ -80,8 +89,79 @@ export default function App() {
     setVolume(value);
   }
 
+  async function toggleFullscreen() {
+    const video = videoRef.current;
+    if (!video) return;
+
+    try {
+      // Browser fullscreen
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+        return;
+      }
+
+      if (video.requestFullscreen) {
+        await video.requestFullscreen();
+        return;
+      }
+
+      // Safari / macOS WebKit fallback
+      if ((video as any).webkitEnterFullscreen) {
+        (video as any).webkitEnterFullscreen();
+        return;
+      }
+    } catch (err) {
+      console.warn("Browser fullscreen failed, using Tauri fullscreen:", err);
+    }
+
+    // Tauri fullscreen fallback
+    const win = getCurrentWindow();
+    const fullscreen = await win.isFullscreen();
+    await win.setFullscreen(!fullscreen);
+    setIsFullscreen(!fullscreen);
+  }
+
+  function keyboardHandler(e: KeyboardEvent) {
+    const video = videoRef.current;
+    if (!video) return;
+    switch (e.key) {
+      case "ArrowLeft":
+        video.currentTime = Math.max(0, video.currentTime - 5);
+        break;
+
+      case "ArrowRight":
+        video.currentTime = Math.min(
+          video.duration,
+          video.currentTime + 5
+        );
+        break;
+
+      case " ":
+        e.preventDefault();
+
+        if (video.paused) {
+          video.play();
+        } else {
+          video.pause();
+        }
+        break;
+
+      case "f":
+        e.preventDefault();
+        toggleFullscreen();
+        break;
+    }
+  }
+
+  useEffect(() => {
+    window.addEventListener("keydown", keyboardHandler);
+    return () => {
+      window.removeEventListener("keydown", keyboardHandler);
+    }
+  }, []);
+
   return (
-    <div className="app">
+    <div className={`app ${isFullscreen ? "fullscreen" : ""}`}>
       <aside className="sidebar">
         <h2>Playlist</h2>
 
@@ -101,16 +181,13 @@ export default function App() {
       <main className="main">
         <header className="topbar">
           <h1>{name === "No video selected" ? "Tauri Video Player" : name}</h1>
-          <button onClick={() => videoRef.current?.requestFullscreen()}>⛶</button>
+          <button onClick={toggleFullscreen}>⛶</button>
         </header>
 
         <section className="player-card">
-          <div className="video-box">
-            {!src && <div className="empty">Select a video to start watching</div>}
-
+          <div className="video-box" ref={playerRef}>
             <video
               ref={videoRef}
-              src={src}
               className="video"
               preload="metadata"
               playsInline
