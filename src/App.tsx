@@ -4,6 +4,13 @@ import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+type PlaylistItem = {
+  id: string;
+  path: string;
+  name: string;
+  url: string;
+};
+
 function fmt(t: number) {
   if (!Number.isFinite(t)) return "00:00";
   const m = Math.floor(t / 60);
@@ -13,7 +20,9 @@ function fmt(t: number) {
 
 export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const playerRef = useRef<HTMLDivElement>(null);
+
+  const [playlist, setPlaylist] = useState<PlaylistItem[]>([]);
+  const [currentIndex, setCurrentIndex] = useState(-1);
 
   const [name, setName] = useState("No video selected");
   const [playing, setPlaying] = useState(false);
@@ -22,33 +31,62 @@ export default function App() {
   const [volume, setVolume] = useState(1);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
-  async function openVideo() {
-    const file = await open({
-      multiple: false,
-      directory: false,
-    });
-
-    if (typeof file !== "string") return;
-
+  function playVideo(list: PlaylistItem[], index: number) {
     const video = videoRef.current;
-    if (!video) return;
-    if (video) {
-      video.pause();
-      video.currentTime = 0;
-    }
+    const item = list[index];
 
+    if (!video || !item) return;
+
+    video.pause();
+    video.currentTime = 0;
+    video.src = item.url;
+    video.controls = true;
+
+    setCurrentIndex(index);
+    setName(item.name);
     setPlaying(false);
     setTime(0);
     setDuration(0);
-    setName(file.split(/[\\/]/).pop() || file);
 
-    const videoUrl = await invoke<string>("load_video_to_memory", {
-      id: "my-video",
-      path: file,
+    video.play().catch((e) => {
+      console.error("Cannot play video:", e);
     });
-    video.src = videoUrl;
-    video.controls = true;
-    video.play();
+  }
+
+  async function openVideo() {
+    const files = await open({
+      multiple: true,
+      directory: false,
+      filters: [
+        {
+          name: "Video",
+          extensions: ["mp4", "mkv", "webm", "mov", "avi"],
+        },
+      ],
+    });
+
+    if (!Array.isArray(files) || files.length === 0) return;
+
+    const items: PlaylistItem[] = [];
+
+    for (const file of files) {
+      const id = crypto.randomUUID();
+
+      const videoUrl = await invoke<string>("load_video_to_memory", {
+        id,
+        path: file,
+      });
+
+      items.push({
+        id,
+        path: file,
+        name: file.split(/[\\/]/).pop() || file,
+        url: videoUrl,
+      });
+    }
+
+    setPlaylist(items);
+    playVideo(items, 0);
   }
 
   async function togglePlay() {
@@ -70,7 +108,10 @@ export default function App() {
     const video = videoRef.current;
     if (!video || !duration) return;
 
-    video.currentTime = Math.max(0, Math.min(video.currentTime + seconds, duration));
+    video.currentTime = Math.max(
+      0,
+      Math.min(video.currentTime + seconds, duration)
+    );
   }
 
   function seekTo(value: number) {
@@ -89,12 +130,31 @@ export default function App() {
     setVolume(value);
   }
 
+  function playNext() {
+    if (!playlist.length) return;
+
+    const nextIndex = currentIndex + 1;
+
+    if (nextIndex >= playlist.length) {
+      setPlaying(false);
+      return;
+    }
+
+    playVideo(playlist, nextIndex);
+  }
+
+  function playPrevious() {
+    if (!playlist.length) return;
+
+    const prevIndex = currentIndex <= 0 ? 0 : currentIndex - 1;
+    playVideo(playlist, prevIndex);
+  }
+
   async function toggleFullscreen() {
     const video = videoRef.current;
     if (!video) return;
 
     try {
-      // Browser fullscreen
       if (document.fullscreenElement) {
         await document.exitFullscreen();
         return;
@@ -105,7 +165,6 @@ export default function App() {
         return;
       }
 
-      // Safari / macOS WebKit fallback
       if ((video as any).webkitEnterFullscreen) {
         (video as any).webkitEnterFullscreen();
         return;
@@ -114,67 +173,85 @@ export default function App() {
       console.warn("Browser fullscreen failed, using Tauri fullscreen:", err);
     }
 
-    // Tauri fullscreen fallback
     const win = getCurrentWindow();
     const fullscreen = await win.isFullscreen();
     await win.setFullscreen(!fullscreen);
     setIsFullscreen(!fullscreen);
   }
 
-  function keyboardHandler(e: KeyboardEvent) {
-    const video = videoRef.current;
-    if (!video) return;
-    switch (e.key) {
-      case "ArrowLeft":
-        video.currentTime = Math.max(0, video.currentTime - 5);
-        break;
-
-      case "ArrowRight":
-        video.currentTime = Math.min(
-          video.duration,
-          video.currentTime + 5
-        );
-        break;
-
-      case " ":
-        e.preventDefault();
-
-        if (video.paused) {
-          video.play();
-        } else {
-          video.pause();
-        }
-        break;
-
-      case "f":
-        e.preventDefault();
-        toggleFullscreen();
-        break;
-    }
-  }
-
   useEffect(() => {
-    window.addEventListener("keydown", keyboardHandler);
-    return () => {
-      window.removeEventListener("keydown", keyboardHandler);
+    function keyboardHandler(e: KeyboardEvent) {
+      const video = videoRef.current;
+      if (!video) return;
+
+      switch (e.key) {
+        case "ArrowLeft":
+          video.currentTime = Math.max(0, video.currentTime - 5);
+          break;
+
+        case "ArrowRight":
+          video.currentTime = Math.min(video.duration, video.currentTime + 5);
+          break;
+
+        case " ":
+          e.preventDefault();
+          togglePlay();
+          break;
+
+        case "f":
+          e.preventDefault();
+          toggleFullscreen();
+          break;
+
+        case "n":
+          playNext();
+          break;
+
+        case "p":
+          playPrevious();
+          break;
+      }
     }
-  }, []);
+
+    window.addEventListener("keydown", keyboardHandler);
+    return () => window.removeEventListener("keydown", keyboardHandler);
+  }, [playlist, currentIndex, duration]);
 
   return (
     <div className={`app ${isFullscreen ? "fullscreen" : ""}`}>
       <aside className="sidebar">
         <h2>Playlist</h2>
 
-        <div className="playlist-item">
-          <div className="thumb">🎬</div>
-          <div>
-            <strong>{name}</strong>
-            <span>{duration ? fmt(duration) : "Ready"}</span>
-          </div>
+        <div className="playlist">
+          {playlist.length === 0 && (
+            <div className="playlist-item">
+              <div className="thumb">🎬</div>
+              <div>
+                <strong>No video selected</strong>
+                <span>Ready</span>
+              </div>
+            </div>
+          )}
+
+          {playlist.map((item, index) => (
+            <div
+              key={item.id}
+              className={`playlist-item ${
+                index === currentIndex ? "active" : ""
+              }`}
+              onClick={() => playVideo(playlist, index)}
+            >
+              <div className="thumb">🎬</div>
+              <div>
+                <strong>{item.name}</strong>
+                <span>{index === currentIndex ? "Playing" : "Ready"}</span>
+              </div>
+            </div>
+          ))}
         </div>
 
         <button className="open-btn" onClick={openVideo}>
-          📁 Open Video
+          📁 Open Videos
         </button>
       </aside>
 
@@ -185,7 +262,7 @@ export default function App() {
         </header>
 
         <section className="player-card">
-          <div className="video-box" ref={playerRef}>
+          <div className="video-box">
             <video
               ref={videoRef}
               className="video"
@@ -198,12 +275,16 @@ export default function App() {
               onTimeUpdate={(e) => setTime(e.currentTarget.currentTime)}
               onPlay={() => setPlaying(true)}
               onPause={() => setPlaying(false)}
-              onEnded={() => setPlaying(false)}
-              onError={(e) => console.error("Video error:", e.currentTarget.error)}
+              onEnded={playNext}
+              onError={(e) =>
+                console.error("Video error:", e.currentTarget.error)
+              }
             />
           </div>
 
           <div className="controls">
+            <button onClick={playPrevious}>⏮</button>
+
             <button onClick={() => seekBy(-10)}>↺ 10</button>
 
             <button className="play-btn" onClick={togglePlay}>
@@ -211,6 +292,8 @@ export default function App() {
             </button>
 
             <button onClick={() => seekBy(10)}>10 ↻</button>
+
+            <button onClick={playNext}>⏭</button>
 
             <span className="time">
               {fmt(time)} / {fmt(duration)}

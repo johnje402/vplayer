@@ -76,6 +76,20 @@ button {
   font-size: 18px;
 }
 
+.playlist {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.playlist-item {
+  cursor: pointer;
+}
+
+.playlist-item.active {
+  background: rgba(255, 255, 255, 0.12);
+}
+
 .playlist-item {
   display: flex;
   gap: 14px;
